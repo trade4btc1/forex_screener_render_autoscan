@@ -1,3 +1,31 @@
+from flask import Flask
+import threading
+from screener import run_screener
+from telegram import Bot
+import os
+
+app = Flask(__name__)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+bot = Bot(token=BOT_TOKEN)
+
+def send_alert_to_telegram(message):
+    bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+
+@app.route('/')
+def home():
+    return "🟢 Screener Bot is running."
+
+@app.route('/scan')
+def scan():
+    results = run_screener()
+    for msg in results:
+        send_alert_to_telegram(msg)
+    return "✅ Scan Complete"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
 import os
 import time
 import datetime
