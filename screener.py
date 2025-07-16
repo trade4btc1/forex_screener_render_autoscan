@@ -1,68 +1,66 @@
-import datetime
 import requests
-import pandas as pd
+from datetime import datetime
+import pytz
+import telegram
 
-API_KEY = "YOUR_POLYGON_API_KEY"
+# Credentials
+TELEGRAM_TOKEN = "7787144306:AAGQNw9vWDTwu5gTKqjahBOYpCNNDYvoCps"
+CHAT_ID = "1833875678"
+FINNHUB_API_KEY = "cV_58MxGkU53YPID3M7wqbFpThEDLo3T"
 
-symbols = {
-    "C:EURUSD": "EUR/USD", "C:GBPUSD": "GBP/USD", "C:USDJPY": "USD/JPY",
-    "C:USDCHF": "USD/CHF", "C:USDCAD": "USD/CAD", "C:AUDUSD": "AUD/USD",
-    "C:NZDUSD": "NZD/USD", "X:BTCUSD": "BTC/USD", "X:ETHUSD": "ETH/USD",
-    "X:XAUUSD": "XAU/USD", "X:XAGUSD": "XAG/USD"
-}
+# Forex and crypto pairs
+pairs = [
+    "OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:USD_JPY", "BINANCE:BTCUSDT",
+    "BINANCE:ETHUSDT", "OANDA:XAU_USD", "OANDA:XAG_USD", "OANDA:AUD_USD",
+    "OANDA:USD_CAD", "OANDA:NZD_USD"
+]
 
-def fetch_polygon_data(ticker):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/15/minute/2023-01-01/{datetime.datetime.utcnow().strftime('%Y-%m-%d')}?adjusted=true&limit=100&apiKey={API_KEY}"
-    r = requests.get(url)
-    if r.status_code != 200 or "results" not in r.json():
+# Timeframes (in minutes): 15m, 1h, 4h
+timeframes = ["15", "60", "240"]
+
+def fetch_candles(symbol, resolution):
+    if "BINANCE" in symbol:
+        url = f"https://finnhub.io/api/v1/crypto/candle?symbol={symbol}&resolution={resolution}&count=100&token={FINNHUB_API_KEY}"
+    else:
+        url = f"https://finnhub.io/api/v1/forex/candle?symbol={symbol}&resolution={resolution}&count=100&token={FINNHUB_API_KEY}"
+    response = requests.get(url)
+    data = response.json()
+    if data.get("s") == "ok":
+        return [
+            {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v}
+            for t, o, h, l, c, v in zip(data["t"], data["o"], data["h"], data["l"], data["c"], data["v"])
+        ][::-1]  # reverse to get latest first
+    return []
+
+def detect_bullish_engulfing(candles):
+    if len(candles) < 3:
         return None
-    data = r.json()["results"]
-    df = pd.DataFrame(data)
-    df["t"] = pd.to_datetime(df["t"], unit="ms")
-    df = df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close"})
-    return df[["t", "Open", "High", "Low", "Close"]]
-
-def detect_patterns(df):
-    if df is None or len(df) < 3:
-        return []
-
-    alerts = []
-    last, prev = df.iloc[-1], df.iloc[-2]
-
-    # Bullish Engulfing + lower BB logic
-    if prev["Close"] < prev["Open"] and last["Close"] > last["Open"] and \
-       last["Close"] > prev["Open"] and last["Open"] < prev["Close"]:
-        if last["Close"] < df["Close"].rolling(20).mean().iloc[-1]:  # lower BB approx
-            alerts.append("🚀 Bullish Engulfing near Lower Bollinger Band")
-
-    # Bearish Engulfing + upper BB logic
-    if prev["Close"] > prev["Open"] and last["Close"] < last["Open"] and \
-       last["Open"] > prev["Close"] and last["Close"] < prev["Open"]:
-        if last["Close"] > df["Close"].rolling(20).mean().iloc[-1]:  # upper BB approx
-            alerts.append("📉 Bearish Engulfing near Upper Bollinger Band")
-
-    # Pin Bar at Support (bullish)
-    if last["Low"] < df["Low"].rolling(10).min().iloc[-2] and \
-       (last["Close"] - last["Open"]) > abs(last["Open"] - last["Low"]):
-        alerts.append("📍 Bullish Pin Bar at Support")
-
-    # Pin Bar at Resistance (bearish)
-    if last["High"] > df["High"].rolling(10).max().iloc[-2] and \
-       (last["Open"] - last["Close"]) > abs(last["High"] - last["Close"]):
-        alerts.append("📍 Bearish Pin Bar at Resistance")
-
-    return alerts
+    c1, c2 = candles[0], candles[1]
+    if c2["c"] < c2["o"] and c1["c"] > c1["o"]:
+        if c1["o"] < c2["c"] and c1["c"] > c2["o"]:
+            return "Bullish Engulfing"
+    return None
 
 def run_screener():
-    messages = []
-    for ticker, name in symbols.items():
-        df = fetch_polygon_data(ticker)
-        patterns = detect_patterns(df)
-        if patterns:
-            price = df["Close"].iloc[-1]
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            msg = f"<b>{name} - 15min Alert</b>\nPrice: {price:.4f}\nTime: {timestamp}\n\n"
-            msg += "\n".join(patterns)
-            msg += "\n\n📌 Sans D Fx Trader"
-            messages.append(msg)
-    return messages
+    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist).strftime("%d %b %Y, %H:%M IST")
+
+    for tf in timeframes:
+        for symbol in pairs:
+            candles = fetch_candles(symbol, tf)
+            pattern = detect_bullish_engulfing(candles)
+            if pattern:
+                entry = candles[0]["c"]
+                sl = round(entry - 20, 2)
+                tp = round(entry + 30, 2)
+                display_name = symbol.split(":")[-1].replace("_", "/").replace("USDT", "/USD")
+
+                message = f"""
+🔔 {display_name} ({tf} min)
+🧩 Pattern: {pattern}
+📍 Entry: {entry} | SL: {sl} | TP: {tp}
+📆 Time: {now}
+📌 Sans D Fx Trader
+"""
+                bot.send_message(chat_id=CHAT_ID, text=message.strip())
